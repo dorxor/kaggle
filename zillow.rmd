@@ -1,0 +1,231 @@
+---
+title: "zillow"
+output: 
+  github_document:
+    encoding: UTF-8
+lang: ko
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(data.table)
+library(bit64)
+library(tidyverse)
+library(lubridate)
+library(corrplot)
+library(gridExtra)
+library(DT)
+library(leaflet)
+library(htmltools)
+```
+
+## 데이터 가져오기
+```{R}
+getwd()
+setwd("C:/Users/82109/Desktop/25-1 강의/ALCP/zillow-prize-1")
+properties_2016 <- fread("properties_2016.csv")
+train_2016 <- fread("train_2016_v2.csv")
+sample_submission <- fread("sample_submission.csv")
+
+head(properties_2016)
+head(train_2016)
+head(sample_submission)
+
+# dim(properties_2016)   (2985217, 58)
+# dim(train_2016)   (90275, 3)
+# dim(sample_submission)   (2985217, 7)
+```
+
+properties_2016 에 결측이 무지 많다… 근데 왜 결측치 처리를 안하고 조인부터 하는거지..?
+
+## df join
+```{r}
+# set key of both sets to parcelid
+setkey(train_2016, parcelid)
+setkey(properties_2016, parcelid)
+
+# perform the join using data.table
+dtrain <- properties_2016[train_2016]
+
+# Remove train_2016 and properties_2016
+rm(train_2016, properties_2016)
+
+```
+
+두 테이블에 key를 미리 지정(인덱싱) → join 연산이 훨씬 빨라짐. merge()보다 good!
+- `dtrain <- properties_2016[train_2016]` : `train_2016`을 기준으로 left join (data.table 전용 문법)
+- 지금까지 사용한 방식?
+```
+library(dplyr)
+dtrain <- train_2016 %>%
+  left_join(properties_2016, by = "parcelid")
+```
+
+- `rm(train_2016, properties_2016)` : join이 끝났으니 원본 두 테이블은 지워서 RAM 절약
+
+## 결측치 처리
+```{r}
+miss_pct <- map_dbl(dtrain, function(x) { round((sum(is.na(x)) / length(x))*100, 1)})
+
+miss_pct <- miss_pct[miss_pct > 0] # 0인 건 제외됨
+
+data.frame(miss=miss_pct, var=names(miss_pct), row.names=NULL) %>%
+  ggplot(aes(x=reorder(var, -miss), y=miss)) +
+  geom_bar(stat='identity', fill='red') + 
+  labs(x='', y='% missing', title='Percent missing data by feature') +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+```
+```{r}
+library(tibble)
+
+# miss_pct는 named numeric vector니까 tibble(=데이터프레임)로 변환
+miss_df <- tibble(
+  variable = names(miss_pct),
+  miss_pct = miss_pct
+)
+```
+```{r}
+library(dplyr)
+
+# 구간 생성 후 count
+miss_df %>%
+  mutate(miss_group = cut(
+    miss_pct,
+    breaks = c(-Inf, 5, 10, Inf),
+    labels = c("0~5%", "5~10%", "10%+"),
+    right = TRUE
+  )) %>%
+  count(miss_group)
+```
+
+결과 : 0~5%(7), 5~10%(1), 10%+(32)/
+58개 특성 중 40개가 결측치 존재
+
+### `ggplot2`의 기본 구조
+```
+ggplot(data = <DATA>, mapping = aes(<MAPPINGS>)) +
+  <GEOM_FUNCTION>() +
+  labs(...) +
+  theme(...) +
+  기타 요소들
+```
+- `aes()`는 aesthetics: 축, 색상, 크기 등 "데이터와 시각요소를 연결"
+- `geom_...()` 함수들 (시각화 종류)
+```
++ geom_point()     # 산점도
++ geom_line()      # 선 그래프
++ geom_bar()       # 막대그래프 (count 기반)
++ geom_col()       # 막대그래프 (y값 직접 지정)
++ geom_boxplot()   # 박스플롯
++ geom_histogram() # 히스토그램
+```
+  - `stat`옵션 : 그래프를 그릴 때 데이터를 자동으로 요약하거나 있는 그대로 그리거나를 선택
+    - `stat = 'identity'` : 데이터를 있는 그대로 사용
+    - `stat = 'count'` (기본값) : 빈도수(갯수)를 세서 막대를 그림
+    - `stat = 'summary'` : y 값이 여러 개일 때, 요약 통계를 계산해서 보여줌(평균, 중앙값, 합계, 표준편차 등)
+
+- `labs()` (축/제목/설명 등 라벨 설정)
+```
++ labs(
+    title = "그래프 제목",
+    subtitle = "부제목",
+    caption = "자료 출처",
+    x = "X축 이름",
+    y = "Y축 이름",
+    color = "범례 이름"
+  )
+```
+- `theme()`은 모든 요소의 스타일을 제어 가능!
+- `scale_...()` 계열 (색상, 축 변환, 범례 등 커스터마이즈)
+- `facet_wrap()` / `facet_grid()` (소분할 그래프)
+```
++ facet_wrap(~ class)            # 변수별 분할
++ facet_grid(cyl ~ drv)          # 행/열 기준 분할
+```
+
+## target 변수 분석
+`logerror`
+```{r}
+dtrain %>%
+  ggplot(aes(x=logerror)) +
+  geom_density(fill='skyblue', color='skyblue') +
+  ggtitle('Distribution of logerror')
+```
+중심에 몰려 분포되어 있고 양끝에 소수의 데이터 존재
+
+### make transaction date column a Date object
+시간 경과에 따라 값이 달라지는지 알아보기 위해
+```{r}
+dtrain[, transactiondate := as.Date(transactiondate)]
+
+dtrain[, list(med_error=abs(mean(logerror))), by=transactiondate] %>%
+  ggplot(aes(x=transactiondate, y=med_error)) +
+  geom_bar(stat='identity', fill='skyblue') + 
+  labs(x='', y='Mean log error', title='Absolute mean log error over time')
+```
+- `:=`는 data.table의 in-place 수정 연산자라 복사 없이 메모리 효율적임
+- 기존에 사용하던 방식?
+`dtrain$transactiondate <- as.Date(dtrain$transactiondate)` : 벡터를 꺼내서 변환한 값을 덮어씌우는 방식
+
+### 시간 경과에 따른 거래량은 얼마인가?
+```{r}
+dtrain[, .N, by=transactiondate] %>%
+  ggplot(aes(x=transactiondate, y=N)) +
+  geom_bar(stat='identity', color='skyblue') +
+  labs(x='', y='Number of transactions', title='Total transactions by day')
+```
+- `.N` → 각 그룹별 행의 개수를 자동으로 계산해줌 (=count)
+
+그래프를 보아하니, 2016년 10월까지는 증가하다가 10월 말쯤부터 급격히 감소함
+왜? 2016년 10월 15일 이후 데이터는 test data에 포함되기 때문임!
+ㄴ?? 그럼 남아있는 것들은 왜지..??
+
+```{r}
+plot1 <-
+  dtrain[, list(n=.N, error=abs(mean(logerror))), by=month(transactiondate)] %>%
+  ggplot(aes(x=as.factor(month), y=error)) +
+  geom_bar(stat='identity', fill='skyblue') +
+  labs(x='Month', y='Mean absolute lor error', title = 'Error by month of year')
+# 한 달 평균 예측 오차의 크기를 보려고
+
+plot2 <-
+  dtrain[, list(n=.N, error=abs(mean(logerror))), by=month(transactiondate)] %>%
+  ggplot(aes(x=as.factor(month), y=n)) +
+  geom_bar(stat='identity') + 
+  labs(x='Month', y='Number of transactions', title = 'Number of transactions by month of year')
+
+grid.arrange(plot1, plot2)
+```
+
+gpt 추천 방법 (성능 고려)
+```{r}
+monthly_summary <- dtrain[, .(n = .N, error = abs(mean(logerror))), by = month(transactiondate)]
+
+plot1 <- ggplot(monthly_summary, aes(x = as.factor(month), y = error)) + ...
+plot2 <- ggplot(monthly_summary, aes(x = as.factor(month), y = n)) + ...
+```
+- .(...) 는 list(...)의 축약형 (data.table 안에서 특별하게 인식되는 별칭)
+
+## Geographic Features
+To avoid overplotting, we’ll use leaflet’s clustering option and then add labels.
+
+```{r}
+dtrain[, list(label=HTML(
+              paste(sep="<br>",
+              paste("Bedrooms: ", bedroomcnt),
+              paste("Bathrooms:", bathroomcnt),
+              paste("Total area:", finishedsquarefeet15)))),
+         list(longitude, latitude)] %>%
+         leaflet() %>%
+         addTiles() %>%
+         addCircleMarkers(
+          lat = ~latitude / 10e5,
+          lng = ~longitude / 10e5,
+          label = ~label,
+          clusterOptions = markerClusterOptions()
+         )
+```
