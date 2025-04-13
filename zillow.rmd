@@ -285,3 +285,138 @@ corrplot(cor(dtrain[, ..good_tax_vars], use='pairwise.complete.obs'), type='lowe
 시각화 결과 :  logerror랑 상관성이 높은 변수가 아무것도 없음
 
 ### Is there a difference in error between the building quality types?
+`buildingqualitytypeid` : 건물의 상태를 최상(최저)에서 최악(최고)으로 전반적으로 평가
+ㄴ1과 12 중에 1이 최상이란 의미겠지?
+
+```{r}
+dtrain %>%
+  ggplot(aes(x=as.factor(buildingqualitytypeid), y=logerror)) +
+  geom_jitter(alpha=0.5, color='grey') +
+  geom_boxplot(color='steelblue', outlier.colour = NA)
+```
+- `geom_jitter` : 같은 x값에서도 y축 방향으로 분산된 듯이 보여서 분포 파악이 쉬움
+- `outlier.colour = NA` : NA는 "결측값" 또는 "표시하지 않음"을 의미. "이상치를 아예 그리지 마세요" 라고 해석
+- `outlier.color`	: 존재하긴 하지만 작동안 할 수 있음
+
+시각화 결과 : 6, 8, 11, 12는 모여있고 나머지는 logerror값이 퍼져있음
+type과 logerror 관련 없는 듯
+
+### yearbuilt
+```{r}
+dtrain[, list(mean_error=mean(logerror)), by=yearbuilt] %>%
+    ggplot(aes(x=yearbuilt, y=abs(mean_error))) + 
+    geom_point(color='grey', alpha=0.8) + 
+    geom_smooth(color='steelblue') + 
+    labs(y='Mean log error', title='Mean absolute log error by year built')
+```
+- `geom_smooth`에서는 기본값으로 `se=TRUE`를 가짐 (95% 신뢰구간)
+
+시각화 결과 : 2000년 이후의 95% 신뢰구간이 확 넓어짐
+
+### bedroomcnt
+```{r}
+ggplot(data=dtrain, aes(x=as.factor(bedroomcnt), y=abs(logerror))) +
+  geom_jitter(alpha=0.3, color='lightgrey') + 
+  geom_boxplot(outlier.colour = NA, color='steelblue') +
+  labs(x='Number of bedrooms', title='Distribution of absolute logerror by bedroom count')
+```
+
+엥.. 근데 집인데 bedroom이 0개일 수가 있나?
+
+### bathroomcnt
+```{r}
+ggplot(data=dtrain, aes(x=as.factor(bathroomcnt), y=abs(logerror))) +
+  geom_jitter(alpha=0.3, color='lightgrey') +
+  geom_boxplot(outlier.color = NA, color='steelblue') +
+  labs(x='Number of bathrooms', title='Distribution of absolute log error by bathroom count')
+```
+- 챗gpt가 outlier.color 안될거라 했는데.. 되네?
+
+### unitcnt
+구조물이 내장된 유닛의 수(예: 2 = duplex, 3 = triplex 등)
+```{r}
+ggplot(data=dtrain, aes(x=as.factor(unitcnt), y=abs(logerror))) +
+  geom_jitter(alpha=0.3, color='lightgrey') +
+  geom_boxplot(outlier.color=NA, color='steelblue') + 
+  labs(x='Number units in structure', title='Distribution of absolute log error by unit count')
+```
+
+# ---
+## prepare
+```{r}
+library(data.table)
+library(caret)
+library(xgboost)
+
+prop <- fread("properties_2016.csv")
+train <- fread("train_2016_v2.csv")
+
+prop$hashottuborspa <- ifelse(prop$hashottuborspa == 'true', 1, 0)
+prop$fireplaceflag <- ifelse(prop$fireplaceflag == 'true', 1, 0)
+prop$taxdelinquencyflag <- ifelse(prop$taxdelinquencyflag == 'Y', 1, 0)
+prop$propertycountylandusecode <- as.numeric(as.factor(prop$propertycountylandusecode))
+prop$propertyzoningdesc <- as.numeric(as.factor(prop$propertyzoningdesc))
+
+setkey(prop, parcelid)
+setkey(train, parcelid)
+
+training <- prop[train]
+```
+
+## xgboost set up
+```{r}
+target <- training$logerror
+dtrain <- training[, !c('logerror', 'parcelid', 'transactiondate'), with=FALSE]
+feature_names <- names(dtrain)
+
+dtest <- xgb.DMatrix(data=as.matrix(prop[, ..feature_names]))
+dtrain <- xgb.DMatrix(data=as.matrix(dtrain), label=target)
+```
+
+## cross-validation
+```{r}
+foldsCV <- createFolds(target, k=3, list=TRUE, returnTrain=FALSE)
+
+param <- list(
+  objective = "reg:squarederror", # "reg:linear" : 옛날 버전!
+  eval_metric = "mae",
+  eta = 0.005, # 학습률 느리게 > 과적합 방지
+  max_depth = 2,
+  min_child_weight = 10,
+  subsample = 0.7,
+  colsample_bytree = 0.5
+)
+```
+
+## model
+```{r}
+xgb_mod <- xgb.train(data=dtrain, params=param, nrounds=1500, print_every_n=5)
+```
+
+## 결과
+### Feature Importance
+```{r}
+Importance_matrix <- xgb.importance(feature_names, model=xgb_mod)
+xgb.plot.importance(Importance_matrix[1:20, ])
+```
+
+결과 top5 
+: finishedsquarefeet12(Finished living area), 
+calculatedfinishedsquarefeet(Calculated total finished living area of the home), 
+structuretaxvaluedollarcnt(The assessed value of the built structure on the parcel), 
+taxamount(The total property tax assessed for that assessment year), 
+taxvaluedollarcnt(The total tax assessed value of the parcel)
+
+
+### predict
+```{r}
+preds <- predict(xgb_mod, dtest)
+results <- data.table(parcelid=prop$parcelid, 
+                      '201610'=preds, 
+                      '201611'=preds, 
+                      '201612'=preds, 
+                      '201710'=preds,
+                      '201711'=preds,
+                      '201712'=preds
+                      )
+```
