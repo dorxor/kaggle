@@ -148,7 +148,10 @@ ggplot(data = <DATA>, mapping = aes(<MAPPINGS>)) +
 ```
 
 ## target 변수 분석
-`logerror`
+`logerror` <- 두 가지 주요 요소(예측값, 실제값)로 계산됨
+- logerror > 0 : 예측값이 실제값보다 높다
+- logerror < 0 : 예측값이 실제값보다 낮다
+
 ```{r}
 dtrain %>%
   ggplot(aes(x=logerror)) +
@@ -183,6 +186,16 @@ dtrain[, .N, by=transactiondate] %>%
 그래프를 보아하니, 2016년 10월까지는 증가하다가 10월 말쯤부터 급격히 감소함
 왜? 2016년 10월 15일 이후 데이터는 test data에 포함되기 때문임!
 ㄴ?? 그럼 남아있는 것들은 왜지..??
+
+```
+transactions %>% 
+  mutate(year_month = make_date(year=year(date),month=month(date)) ) %>% 
+  group_by(year_month) %>% summarize(mean_logerror = mean(logerror)) %>% 
+  ggplot(aes(x=year_month,y=mean_logerror)) + 
+  geom_line(size=1.5, color="red") + 
+  geom_point(size=5, color="red") + 
+  theme_bw()
+```
 
 ```{r}
 plot1 <-
@@ -225,11 +238,50 @@ map <- dtrain[, list(label=HTML(
          addCircleMarkers(
           lat = ~ latitude / 1e6,
           lng = ~ longitude / 1e6,
-          label = ~ label,
+          label = ~ label, # 아까 만든 HTML 라벨 표시(계속 확대해서 집 하나일 때)
           clusterOptions = markerClusterOptions()
          )
 
 # 브라우저에서 열기
-saveWidget(map, "map2.html", selfcontained = TRUE)
-browseURL("map2.html")
+# saveWidget(map, "map2.html", selfcontained = TRUE)
+# browseURL("map2.html")
 ```
+
+## Physical Features
+correlation plot of some of the physical features including logerror
+
+```{r}
+cnt_vars <- c('bathroomcnt', 'bedroomcnt', 'calculatedbathnbr', 'finishedfloor1squarefeet', 'calculatedfinishedsquarefeet',
+              'finishedsquarefeet13', 'finishedsquarefeet15', 'finishedsquarefeet50', 'finishedsquarefeet6',
+              'fireplacecnt', 'fullbathcnt', 'garagecarcnt', 'garagetotalsqft', 'poolcnt', 'roomcnt',
+              'threequarterbathnbr', 'unitcnt', 'numberofstories', 'logerror')
+
+corrplot(cor(dtrain[, ..cnt_vars], use='pairwise.complete.obs'), type='lower')
+```
+- `cor(dtrain[, ..cnt_vars]` : dtrain에서 cnt_vars에 해당하는 열만 뽑아옴
+- `use='pairwise.complete.obs'` : NA값이 있어도 가능한 변수들끼리 쌍별로 계산하게 함
+
+```{r}
+# num_ features
+good_num_vars <- c('bathroomcnt', 'bedroomcnt', 'calculatedbathnbr', 'fullbathcnt', 'garagecarcnt', 'unitcnt', 'logerror')
+
+corrplot(cor(dtrain[, ..good_num_vars], use='pairwise.complete.obs'), type='lower')
+```
+
+```{r}
+# area_ features
+good_area_vars <- c('calculatedfinishedsquarefeet', 'finishedfloor1squarefeet', 'garagetotalsqft', 'lotsizesquarefeet', 'logerror')
+
+corrplot(cor(dtrain[, ..good_area_vars], use='pairwise.complete.obs'), type='lower')
+```
+
+```{r}
+# tax_ features
+good_tax_vars <- c('taxvaluedollarcnt', 'structuretaxvaluedollarcnt', 'landtaxvaluedollarcnt', 'taxamount', 'logerror')
+
+corrplot(cor(dtrain[, ..good_tax_vars], use='pairwise.complete.obs'), type='lower')
+```
+
+시각화 결과 :  logerror랑 상관성이 높은 변수가 아무것도 없음
+
+### Is there a difference in error between the building quality types?
