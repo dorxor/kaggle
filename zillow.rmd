@@ -202,7 +202,7 @@ grid.arrange(plot1, plot2)
 ```
 
 gpt 추천 방법 (성능 고려)
-```{r}
+```
 monthly_summary <- dtrain[, .(n = .N, error = abs(mean(logerror))), by = month(transactiondate)]
 
 plot1 <- ggplot(monthly_summary, aes(x = as.factor(month), y = error)) + ...
@@ -214,7 +214,7 @@ plot2 <- ggplot(monthly_summary, aes(x = as.factor(month), y = n)) + ...
 To avoid overplotting, we’ll use leaflet’s clustering option and then add labels.
 
 ```{r}
-dtrain[, list(label=HTML(
+map <- dtrain[, list(label=HTML(
               paste(sep="<br>",
               paste("Bedrooms: ", bedroomcnt),
               paste("Bathrooms:", bathroomcnt),
@@ -223,9 +223,13 @@ dtrain[, list(label=HTML(
          leaflet() %>%
          addTiles() %>%
          addCircleMarkers(
-          lat = ~latitude / 10e5,
-          lng = ~longitude / 10e5,
-          label = ~label,
+          lat = ~ latitude / 1e6,
+          lng = ~ longitude / 1e6,
+          label = ~ label,
           clusterOptions = markerClusterOptions()
          )
+
+# 브라우저에서 열기
+saveWidget(map, "map2.html", selfcontained = TRUE)
+browseURL("map2.html")
 ```
